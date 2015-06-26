@@ -1,0 +1,176 @@
+% stimManager.calcStim()
+% override this method to specify the visual stimulus and correct/incorrect reponses for a trial
+% define your stimManager subclass to contain any necessary state
+% calcStim output is interpreted by a trialManager, this document describes the interpretation by nAFC, freeDrinks, and their subclasses.
+%
+% calcStim can return either phased or non-phased outputs, depending on the return value of 'type'
+% see below for more detailed description of each return value in both cases
+% 
+%
+%
+% INPUTS
+%   stimulus                this images stimManager object (contains your custom state)
+%   trialManagerClass       the trialManager class for the running training step
+%   resolutions             struct array of available resolutions
+%   displaySize             physical dimensions of the display in mm (see discusion in help for screen('displaysize'))
+%   LUTbits                 precision of entries in the color look up (gamma/linearization) table
+%   responsePorts           vector of available response port indices on the running station (determined by trial manager)
+%   totalPorts              total number of available ports on this station (useful for positioning stimuli)
+%   trialRecords            a struct array of trialRecords from previous trials (all trials from this session included)
+%                           on Nth trial of this session, M-N+1 trials from previous sessions are included
+%                           M currently hardcoded in station.doTrials to 100
+%                           the last element of trialRecords will the trialRecord for THIS trial (for access to the trainingStepNum, etc)
+% OUTPUTS
+%   stimulus                this images stimManager object
+%   updateSM                boolean flag indicating whether you've changed state (field values) in this object that you'd like to persist for future reference
+%   resolutionIndex         if trialManager.displayMethod = 'ptb'
+%                               index from the resolutions input that you want to set
+%                               (you may wish to use chooseLargestResForHzsDepthRatio with the maxWidth/maxHeight set in the stimulusManager constructor by the setup file -- call getMaxWidth(stimulus))
+%                           if trialManager.displayMethod = 'LED'
+%                               the analog output hz you want to use for this trial (ignored if type is 'phased' - each stimSpec has its own hz)
+%   preRequestStim            a struct containing the following fields as parameters used to create a stimSpec for the 'pre-onset' phase
+    %   stimulus                if type is 'expert':
+    %                               a struct with fields that are required, have no direct effect, but affect what is passed to your drawExpertFrame method:
+    %                                   floatprecision (as defined for screen('MakeTexture') -- will be passed to your drawExpertFrame method)
+    %                                   height (in pixels, will scale stim to this size to compute the destRect passed to your drawExpertFrame method)
+    %                                   width (as above)
+    %                                   (you may wish to set width/height using the maxWidth/maxHeight set in the stimulusManager constructor by the setup file -- call getMaxWidth(stimulus))
+    %                           if type is 'phased':
+    %                               a cell vector of stimSpecs (see below + the stimSpec constructor help)
+    %                           otherwise:
+    %                               monochrome stimulus frames.  logical, real (0<=x<=1) [double single], or [uint8 uint16].  2 or 3 dimensional array (y,x,frame)
+    %                               uint8 values will be mapped to 8-bit clut indices
+    %                               uint16 are converted to singles and treated as float
+    %                               float (double, single) values will be processed at 16 bits until finally rendered through a potentially higher dynamic range clut           
+    %                               (you may wish to set the dimensions using the maxWidth/maxHeight set in the stimulusManager constructor by the setup file -- call getMaxWidth(stimulus))
+    %   scaleFactor             ignored if type is 'phased' (each stimSpec has its own scaleFactor)    
+    %                           (potentially non-integer) factors by which to scale stim when mapping onto pixels
+    %                               [height width]>0, special case scalar zero means scale to full screen
+    %                               scaleFactor.*[y x] (dimensions of out array) must not exceed the resolution you specify
+    %   type                    see below
+    %   startFrame          what frame of the stimulus to start at
+    %   autoTrigger         a cell array of values {pA, portA, pB, portB,...} where pA specifies the probability of stochastically triggering
+    %                            	portA, and pB specifies the probability of triggering portB, etc
+    %                           	this is done for every frame of the stimulus (loop of runRealTimeLoop), and the execution order is whatever comes first
+    %                               in this cell array (ie pA is tried, then pB, and so forth)
+    %   framesUntilTimeout  optional parameter that indicates a timeout for this phase (only for discrimStim)
+    %   punishResponses     whether to punish/ignore responses during this phase (only for preRequestStim and preResponseStim)
+%   preResponseStim         same as preRequestStim; this phase happens after a request is received
+%   discrimStim             same as preRequestStim; this phase is the normal 'discriminandum' phase
+%   LUT                     the color look up (gamma/linearization) table to pass to the gfx card
+%                           must be 256 X 3 array, 0<=x<=1 (reallutsize from screen('ReadNormalizedGammaTable') is inaccurate -- can be 1024 on osx, but 'LoadNormalizedGammaTable' silently fails when table is longer than 256)
+%                           on windows, table subject to unpublished constraints vaguely resembling monotonic increasing
+%   targetPorts             ignored if type is 'phased'
+%                           vector subset of responsePorts that will count as correct responses 
+%   distractorPorts         ignored if type is 'phased'
+%                           vector subset of responsePorts (disjoint with targetPorts) that will count as incorrect responses (remainder will be dead ports)
+%                           if union(targetPorts distractorPorts) is empty, the trial ends when the stimulus ends, rather than waiting for a response
+%                           for stimuli with no "end," union must not be empty, or there would be no way for the trial to end
+%   details                 a structure of your design including parameters you choose in this method that will be saved with the trialRecord 
+%   interTrialLuminance     ignored if type is 'phased' (make a "final" stimSpec that holds this value as you need)
+%                           a scalar value.  class determins interpreation as for out.
+%                           full field luminance at this value will be shown until the first request
+%                           also held after this trial ends until the beginning of the next trial
+%                           if requestPorts (determined by the trialManager) is empty, the stimulus you provide (out) starts immediately
+%   text                    message to add to text label on each frame (can be single string or cell vector of length numFrames)
+%   indexPulses             boolean vector same length as out indicating what to output on the station's indexPin during each frame (set to [] for all false)
+%   imagingTasks            a cell array of imaging tasks to pass to the PsychImaging pipeline
+%                           typically empty, in which case we open a normal PTB window instead of using the PsychImaging pipeline
+%
+%
+%
+% values for 'type,' their semantics, and restrictions 
+% note that these options grew organically as they were needed scientifically
+% they are not intended to be an elegant covering of the space of possibilities
+% if creative use of these does not meet your needs, implement a new type!
+% 
+% type='phased'             'out' is a cell vector of stimSpecs (see stimSpec constructor help) (will not call the phaseify method)
+%
+% %%% For all other types listed below, phaseify will be called to convert the non-phased calcStim output to a phased version,
+%       according to trialManagerClass. phaseify() will automatically convert the non-phased output to a stimSpec, with the appropriate behavior for
+%       nAFC and freeDrinks. for future stimulus managers, however, calcStim should return phased outputs instead of relying on this method. 
+%
+% type='static'             show one single frame
+% 
+% type={'trigger' toggleStim}            show frame 1, except during requests, show frame 2
+%	toggleStim=false:   requests are coextensive with beambreaks (eg for nose pokes)
+%	toggleStim=true:    request state toggles with each beambreak (eg for lickometers)
+%	union(targetPorts distractorPorts) must not be empty
+% 
+% type='cache'              play through the frames in order, once
+% 
+% type='loop'               play through the frames in order, looping.
+% 	union(targetPorts distractorPorts) must not be empty
+% 
+% type={'timedFrames' [frameTimes]}        show frames in order, each for the specified number of screen refreshes
+%	frameTimes is: 
+%       a vector of length equal to number of frames (size(stim,3)))
+%       all integers > 0 representing the number or refreshes to display each frame
+%       a zero in the final entry means hold display of last frame (in which case union(targetPorts distractorPorts) must not be empty)
+% 
+% type={'indexedFrames' [frameIndices]}     show frames in some order, useful if frames would otherwise be redundant
+% 	loops over frameIndices vector until response (union(targetPorts distractorPorts) must not be empty)
+%	frameIndices is:
+%       a vector of frame indices
+%       all integers btw 1 and the number of frames (size(stim,3)))
+% 
+% type='dynamic'            will call frames=stimManager.moreStim(usefulState) to request additional frames whenever it runs out
+%   not yet implemented 
+%
+% type='expert'            will call stimManager.drawExpertFrame before each frame
+%   your stimManager should override this method and call ptb drawing functions directly
+%   leave frame text stamps, frameDropCorner, screen('drawingfinished'), and screen('flip') to stimOGL
+%   this is an opportunity to use the imaging pipeline and shader programs for fast GPU-based stim computation, see ptb examples:
+%       PsychDemos\ProceduralGaborDemo.m
+%       PsychDemos\ProceduralGarboriumDemo.m
+%       PsychDemos\ContrastModulatedNoiseTheElegantStyleDemo.m
+%       PsychAlpha\FastSeparableFilteredNoiseDemo.m
+%       PsychGLImageProcessing\FastFilteredNoiseDemo.m
+%       PsychGLImageProcessing\NewFastFilteredNoiseDemo.m
+%       PsychAlpha\ImageUndistortionDemo.m
+%       PsychAlpha\ImageWarpingDemo.m
+%   other uses: fast GPU-based rotation available in screen('drawtexture'), stimulus is too large to precache but fast enough to dynamically compute, alphablending, etc.
+%   don't forget to call screen('close',[textureIDs]) on textures you create after no longer using them so you don't run out of VRAM (they will be automatically destroyed at the end of the trial)
+%   INPUTS
+%           stimManager         - your stimManager object
+%           stim                - the stim returned by your calcStim
+%           i                   - starts at 1, the value you pass out will be passed back to you on the next frame
+%           phaseStartTime      - the GetSecs() timestamp at the beginning of this phase (will be AFTER the last VBL from the previous phase)
+%           window              - the ptb window handle you should draw to
+%           textLabel           - the text returned by your calcStim or previous calls to drawExpertFrame
+%           floatprecision      - the precision associated with screen('maketexture') for the stim returned by calcStim for this phase (determined by the out.floatprecision of your calcStim method)
+%           destRect            - the destinationRect associated with screen('drawtexture') for this phase (determined by the out.width and out.height of your calcStim method) -- typically represents entire screen
+%           filtMode            - the filterMode to pass to screen('drawtexture') (currently hardcoded in runRealTimeLoop)
+%           expertCache         - you can stick stuff here and it will be passed back to you on future calls
+%           ifi                 - the measured ifi in seconds
+%           scheduledFrameNum   - the frame number that would be scheduled for this time, assuming no drops, with respect to the beginning of the phase (starts at 1).  takes ifi and framesPerUpdate, but not pauses, into account.
+%           dropFrames          - if the trialManager was contructed with dropFrames set, you should draw the scheduledFrameNum rather than incrementally drawing the next frame (skipping frames that have been missed)
+%   OUTPUTS 
+%           doFramePulse        - whether flipFrameAndDoPulse should emit frame pulses (setting is sticky and overrides stimOGL's noPulses argument
+%           expertCache         - you can stick stuff here and it will be passed back to you on future calls
+%           dynamicDetails      - a structure of your design including parameters you choose in this method that will be saved with the trialRecord 
+%           textLabel           - use this to override the text returned by your calcStim
+%           i                   - integer to print on the frame lables as 'stimInd' (if textLabel is a cell, determines which is printed)
+%           dontclear           - expert value for 'dontclear', used by Screen('Flip') and Screen('DrawingFinished')
+%           indexPulse          - boolean scalar indicating what to output on the station's indexPin during this frame
+
+% for phased type, your stimManager must override the method getSoundsToPlay, which is called every frame.  
+% INPUTS
+%   stimManager          your stimManager object
+%   soundNames           the available soundNames
+%   ports                the ports just triggered
+%   lastPorts            the ports triggered on the last loop (so you can notice changes)
+%   phase                the stimSpec index
+%   framesInPhase        the number of frame flips that have occured in this phase (starts at zero, equals the frame number if you haven't dropped any)
+%   msRewardSound        the msRewardSound returned by the reinforcementManager
+%   msPenaltySound       the msPenaltySound returned by the reinforcementManager
+%   targetOptions        the target ports your calcStim returned
+%   distractorOptions    the distractor ports your calcStim returned
+%   requestOptions       the request ports your calcStim returned
+%   playRequestSoundLoop a request is currently underway (as defined by the trialManager's request ports and reinforcementManager's request repeat mode)
+%   trialManagerClass    the class of the trialManager
+% OUTPUTS
+%   soundsToPlay    a cell array of sound names in the form:  { {playLoop sounds}, {{playSound sound, playSound duration}, {playSound sound, playSound duration}, ...} }
+%                   to loop a sound, include it in the playLoop list on every frame during which it should play
+%                   to stop a looping sound, stop including it in the list
+%                   a playSound that is longer than the phase is cut off at the end of the phase.

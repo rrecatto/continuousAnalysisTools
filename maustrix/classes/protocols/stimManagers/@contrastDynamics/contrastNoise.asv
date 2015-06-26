@@ -1,0 +1,78 @@
+function s=contrastNoise(varargin)
+% WHITENOISE  class constructor.
+
+% s = whiteNoise(distribution,std,background,method,requestedStimLocation,stixelSize,searchSubspace,numFrames,
+%       maxWidth,maxHeight,scaleFactor,interTrialLuminance)
+
+s.background = [];
+s.numFrames = [];
+s.duration = [];
+s.frameDuration = [];
+s.LUT=[];
+s.LUTbits=0;
+
+s.blankOn = false;
+s.blankDuration = 0;
+
+s.stimParams.type = 'staticNoise';
+s.stimParams.filterSize = 30;
+s.stimParams.maskSize = [];
+s.stimParams.maskocation = [0.5 0.5];
+
+s.LEDParams.active = false;
+s.LEDParams.fraction = 0;
+s.LEDParams.fractionMode = 'byTrial';
+s.LEDParams.LEDStimMode = 'continuous';
+s.LEDParams.LEDStimModeParams = [];
+
+
+switch nargin
+    case 0
+        % if no input arguments, create a default object
+        
+        s = class(s,'contrastNoise',stimManager());
+    case 1
+        % if input is of this class type
+        if (isa(varargin{1},'contrastNoise'))
+            s = varargin{1};
+        else
+            error('Input argument is not a whiteNoiseBubble object')
+        end
+    case 300
+        
+        % background
+        if isscalar(varargin{1})
+            s.background = varargin{1};
+        elseif iscell(varargin{1})
+            s.background = varargin{1}{1};
+            s.blankOn = true;
+            s.blankDuration = varargin{1}{2};
+        else
+            error('background must be a scalar or a cell with a blanking duration');
+        end
+
+        % numFrames
+        if isscalar(varargin{2})
+            s.numFrames = varargin{2};
+        elseif iscell(varargin{2})
+            s.duration = varargin{2}{1};
+            s.frameDuration = varargin{2}{2};
+        else
+            error('numFrames must be a scalar');
+        end
+        
+        %calculate spatialDim
+        s.spatialDim=ceil([diff(s.requestedStimLocation([1 3])) diff(s.requestedStimLocation([2 4]))]./s.stixelSize);
+        
+
+
+        if ~isscalar(varargin{7}) && ~isinf(varargin{7})
+            error('contrastNoise requires numFrames to be infinite. the actual num frames is set by calcStim');
+        end
+        
+        s = class(s,'contrastNoise',stimManager(varargin{9},varargin{10},varargin{11},varargin{12}));
+    otherwise
+        error('invalid number of input arguments');
+end
+
+
